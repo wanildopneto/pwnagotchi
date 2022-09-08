@@ -215,25 +215,29 @@
       regexp: "#EPD_SIZE=2.0"
       line: "EPD_SIZE=2.0"
 
-  - name: collect python pip package list
-    command: "pip3 list"
-    register: pip_output
+  # pip v20.3 uses a newer dependency resolver that better handles our unique situation.
+  # Specifically, it handles mismatches between direct requirements without extras and
+  # indirect requirements that do want extras (e.g. gym vs stable-baselines->gym[atari]).
+  - name: Upgrade pip
+    pip:
+      name: "pip"
+      version: ">=20.3"
 
-  - name: set python pip package facts
-    set_fact:
-      pip_packages: >
-        {{ pip_packages | default({}) | combine( { item.split()[0]: item.split()[1] } ) }}
-    with_items: "{{ pip_output.stdout_lines }}"
-
-  - name: acquire python3 pip target
-    command: "python3 -c 'import sys;print(sys.path.pop())'"
+  # Debian has two different system-level site package directories:
+  #   /usr/local/lib/pythonX.Y/dist-packages  for packages installed via "sudo pip3"
+  #   /usr/lib/pythonX.Y/dist-packages        for packages installed via "sudo apt-get"
+  # Most of the time, pip is smart enough to not touch the packages installed by apt.
+  # Other times, it will try to uninstall the existing apt packages and fail.
+  - name: Get local site packages path
+    command: python3 -c "import site; sp=[d for d in site.getsitepackages() if '/local' in d]; print(sp[0])"
     register: pip_target
 
-  - name: clone pwnagotchi repository
-    git:
-      repo: https://github.com/evilsocket/pwnagotchi.git
-      dest: /usr/local/src/pwnagotchi
-    register: pwnagotchigit
+  # Manually specifying pip's --target argument will make pip install only to the target
+  # directory without attempting to uninstall older package versions from elsewhere.
+  - name: Install pwnagotchi from source archive
+    pip:
+      name: /usr/local/src/pwnagotchi/pwnagotchi-{{ pwnagotchi.version }}.tar.gz
+      extra_args: --prefer-binary --target={{ pip_target.stdout }}
 
   - name: create /usr/local/share/pwnagotchi/ folder
     file:
@@ -244,26 +248,6 @@
     git:
       repo: https://github.com/evilsocket/pwnagotchi-plugins-contrib.git
       dest: /usr/local/share/pwnagotchi/availaible-plugins
-
-  - name: fetch pwnagotchi version
-    set_fact:
-      pwnagotchi_version: "{{ lookup('file', '/usr/local/src/pwnagotchi/pwnagotchi/_version.py') | regex_replace('.*__version__.*=.*''([0-9]+\\.[0-9]+\\.[0-9]+[A-Za-z0-9]*)''.*', '\\1') }}"
-
-  - name: pwnagotchi version found
-    debug:
-      msg: "{{ pwnagotchi_version }}"
-
-  - name: build pwnagotchi wheel
-    command: "python3 setup.py sdist bdist_wheel"
-    args:
-      chdir: /usr/local/src/pwnagotchi
-    when: (pwnagotchigit.changed) or (pip_packages['pwnagotchi'] is undefined) or (pip_packages['pwnagotchi'] != pwnagotchi_version)
-
-  - name: install pwnagotchi wheel and dependencies
-    pip:
-      name: "{{ lookup('fileglob', '/usr/local/src/pwnagotchi/dist/pwnagotchi*.whl') }}"
-      extra_args: "--no-cache-dir"
-    when: (pwnagotchigit.changed) or (pip_packages['pwnagotchi'] is undefined) or (pip_packages['pwnagotchi'] != pwnagotchi_version)
 
   - name: download and install pwngrid
     unarchive:
